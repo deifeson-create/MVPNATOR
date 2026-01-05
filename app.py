@@ -5,17 +5,50 @@ import concurrent.futures
 from datetime import datetime, timedelta
 
 # ==============================================================================
-# 1. CONFIGURAÇÕES GERAIS
+# 1. CONFIGURAÇÕES INICIAIS
 # ==============================================================================
-st.set_page_config(page_title="Painel MVP - Ranking Oficial", layout="wide", page_icon="🏆")
+st.set_page_config(page_title="Painel MVP - Oficial", layout="wide", page_icon="🏆")
 
-# IDs DE CONFIGURAÇÃO (Pesquisa de Satisfação)
+# --- 🔒 BLOQUEIO DE SEGURANÇA (SENHA MESTRA) ---
+def check_master_password():
+    """Bloqueia o app até que a senha mestra seja inserida."""
+    if "app_unlocked" not in st.session_state:
+        st.session_state.app_unlocked = False
+
+    if not st.session_state.app_unlocked:
+        st.markdown("<br><br><br>", unsafe_allow_html=True)
+        col1, col2, col3 = st.columns([1, 1, 1])
+        
+        with col2:
+            st.title("🔒 Acesso Restrito")
+            st.markdown("Este sistema é protegido. Insira a senha de acesso.")
+            
+            with st.form("master_login"):
+                senha_input = st.text_input("Senha do Sistema", type="password")
+                submit = st.form_submit_button("Desbloquear Painel", use_container_width=True)
+                
+                if submit:
+                    # Verifica a senha no secrets
+                    if senha_input == st.secrets["security"]["MASTER_PASSWORD"]:
+                        st.session_state.app_unlocked = True
+                        st.rerun()
+                    else:
+                        st.error("Senha incorreta.")
+        
+        st.stop() # Para a execução aqui se não estiver desbloqueado
+
+# Executa a verificação antes de qualquer coisa
+check_master_password()
+
+# ==============================================================================
+# 2. CONSTANTES E CONFIGURAÇÕES DE NEGÓCIO
+# ==============================================================================
+
 CONFIG_PESQUISA = {
     "PESQUISAS_IDS": ["35", "43"],
     "IDS_PERGUNTAS_VALIDAS": ["65", "75"]
 }
 
-# MAPA DE SETORES E AGENTES
 SETORES_AGENTES = {
     "NRC": ['RILDYVAN', 'MILENA', 'ALVES', 'MONICKE', 'AYLA', 'MARIANY', 'EDUARDA', 
             'MENEZES', 'JUCIENNY', 'MARIA', 'ANDREZA', 'LUZILENE', 'IGO', 'AIDA', 
@@ -35,7 +68,7 @@ SETORES_AGENTES = {
 CANAIS_ALVO = ['appchat', 'chat', 'botmessenger', 'instagram', 'whatsapp']
 
 # ==============================================================================
-# 2. CARREGAMENTO DE SEGREDOS (SECRETS)
+# 3. CARREGAMENTO DE SEGREDOS (API)
 # ==============================================================================
 try:
     API_URL = st.secrets["api"]["BASE_URL"]
@@ -43,25 +76,18 @@ try:
     API_PASS = st.secrets["api"]["ADMIN_PASS"]
     API_CONTA_PADRAO = st.secrets["api"]["ID_CONTA"]
 except Exception as e:
-    st.error("❌ Erro Crítico: Credenciais não encontradas no secrets.toml.")
-    st.info("Configure as chaves: BASE_URL, ADMIN_USER, ADMIN_PASS, ID_CONTA na seção [api].")
+    st.error("❌ Erro Crítico: Credenciais da API não encontradas no secrets.")
     st.stop()
 
-# Lógica Multi-Contas (Setor Negociação)
 def obter_contas_do_setor(nome_setor):
-    """Define quais contas consultar dependendo do setor."""
-    contas = [API_CONTA_PADRAO] # Conta padrão (1)
-    
+    """Regra de Negócio: Negociação usa conta 1 e 14."""
+    contas = [API_CONTA_PADRAO]
     if nome_setor == "NEGOCIACAO":
-        # Adiciona conta secundária se houver, ou usa ID fixo 14
-        # Se quiser parametrizar no secrets também: st.secrets["api"].get("ID_CONTA_SECUNDARIA", "14")
-        if "14" not in contas:
-            contas.append("14")
-            
+        if "14" not in contas: contas.append("14")
     return contas
 
 # ==============================================================================
-# 3. FUNÇÕES VISUAIS (PÓDIO)
+# 4. FUNÇÕES VISUAIS
 # ==============================================================================
 def render_top3_cards(df_rank):
     """Renderiza os cards de Ouro, Prata e Bronze."""
@@ -106,7 +132,7 @@ def render_top3_cards(df_rank):
                 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# 4. FUNÇÕES DE CÁLCULO
+# 5. FUNÇÕES DE CÁLCULO
 # ==============================================================================
 def time_str_to_seconds(tempo_str):
     if not tempo_str or not isinstance(tempo_str, str): return 0
@@ -126,29 +152,24 @@ def calcular_rankings_setor(df_dados):
     if df_dados.empty: return None, df_dados
     df = df_dados.copy()
     
-    # Conversão de tempo
     df['TMA_Seg'] = df['TMA'].apply(time_str_to_seconds)
     df['TMIA_Seg'] = df['TMIA'].apply(time_str_to_seconds)
 
-    # Filtro de Elegibilidade
     df_elegivel = df[(df['Volume'] > 0) & (df['CSAT_Qtd'] > 0)].copy()
     if df_elegivel.empty: return None, df
 
-    # Rankings
     df_elegivel['Rank_TMA'] = df_elegivel['TMA_Seg'].rank(ascending=True)
     df_elegivel['Rank_TMIA'] = df_elegivel['TMIA_Seg'].rank(ascending=True)
     df_elegivel['Rank_CSAT'] = df_elegivel['CSAT_Score'].rank(ascending=False)
 
-    # Score Final (Menor é melhor)
     df_elegivel['Score_Final'] = (df_elegivel['Rank_TMA'] + df_elegivel['Rank_TMIA'] + df_elegivel['Rank_CSAT'])
 
-    # Ordenação
     df_final = df_elegivel.sort_values(by='Score_Final', ascending=True)
     vencedor = df_final.iloc[0]['Agente']
     return vencedor, df_final
 
 # ==============================================================================
-# 5. INTEGRAÇÃO API
+# 6. INTEGRAÇÃO API
 # ==============================================================================
 @st.cache_data(ttl=3600)
 def get_token():
@@ -207,19 +228,14 @@ def mapear_agentes_api(token):
 
 @st.cache_data(ttl=600)
 def buscar_dados_operacionais_multi(token, lista_contas, d_ini, d_fim, canais, agentes_ids):
-    """Busca TMA/TMIA em múltiplas contas e consolida."""
     url = f"{API_URL.rstrip('/')}/rest/v2/relAtEstatistico"
     headers = {"Authorization": f"Bearer {token}"}
     temp_stats = {} 
     
     for id_conta in lista_contas:
         params = {
-            "data_inicial": f"{d_ini} 00:00:00",
-            "data_final": f"{d_fim} 23:59:59",
-            "agrupador": "agente",
-            "agente[]": agentes_ids,
-            "canal[]": canais,
-            "id_conta": id_conta
+            "data_inicial": f"{d_ini} 00:00:00", "data_final": f"{d_fim} 23:59:59",
+            "agrupador": "agente", "agente[]": agentes_ids, "canal[]": canais, "id_conta": id_conta
         }
         try:
             r = requests.get(url, headers=headers, params=params, timeout=40)
@@ -241,17 +257,12 @@ def buscar_dados_operacionais_multi(token, lista_contas, d_ini, d_fim, canais, a
     stats_final = {}
     for nome, dados in temp_stats.items():
         vol = dados["Vol"]
-        if vol > 0:
-            avg_tma = dados["W_TMA"] / vol
-            avg_tmia = dados["W_TMIA"] / vol
+        if vol > 0: avg_tma = dados["W_TMA"] / vol; avg_tmia = dados["W_TMIA"] / vol
         else: avg_tma = 0; avg_tmia = 0
-        stats_final[nome] = {
-            "Volume": vol, "TMA": seconds_to_hms(avg_tma), "TMIA": seconds_to_hms(avg_tmia)
-        }
+        stats_final[nome] = {"Volume": vol, "TMA": seconds_to_hms(avg_tma), "TMIA": seconds_to_hms(avg_tmia)}
     return stats_final
 
 def buscar_csat_multi(token, lista_contas, id_agente, d_ini, d_fim):
-    """Soma pesquisas de múltiplas contas."""
     url = f"{API_URL.rstrip('/')}/rest/v2/RelPesqAnalitico"
     headers = {"Authorization": f"Bearer {token}"}
     pos_total, tot_total = 0, 0
@@ -284,29 +295,33 @@ def buscar_csat_multi(token, lista_contas, id_agente, d_ini, d_fim):
     return pos_total, tot_total
 
 # ==============================================================================
-# 6. APP STREAMLIT
+# 7. APP STREAMLIT (Layout)
 # ==============================================================================
 with st.sidebar:
-    st.title("⚙️ Filtros")
+    st.header("⚙️ Configuração")
     hoje = datetime.now()
     inicio_mes = hoje.replace(day=1)
     data_ini = st.date_input("Início", inicio_mes)
     data_fim = st.date_input("Fim", hoje)
+    
     st.markdown("---")
-    btn_calcular = st.button("🚀 Calcular Ranking", use_container_width=True, type="primary")
+    st.markdown("**Status:** 🟢 Sistema Seguro")
+    btn_calcular = st.button("🚀 Calcular MVP", use_container_width=True, type="primary")
 
-st.title("🏆 Ranking MVP do Mês (Oficial)")
-st.markdown("Cálculo: **Soma de Rankings** (Volume, TMA, TMIA e CSAT).")
+st.title("🏆 Ranking MVP - Resultados Oficiais")
+st.markdown("Sistema de eleição automática baseado em **Soma de Rankings**.")
 
 if btn_calcular:
     token = get_token()
-    if not token: st.error("Erro na autenticação API (Verifique Secrets)."); st.stop()
+    if not token: st.error("Erro de Autenticação."); st.stop()
         
-    with st.status("🔍 Processando indicadores...", expanded=True) as status:
-        st.write("📡 Mapeando agentes e setores...")
+    with st.status("🔍 Analisando indicadores...", expanded=True) as status:
+        st.write("📡 Mapeando equipe e setores...")
         ids_canais = buscar_ids_canais(token)
         mapa_setores, lista_todos_ids = mapear_agentes_api(token)
         
+        if not lista_todos_ids: st.error("Nenhum agente encontrado."); st.stop()
+            
         d_ini_str = data_ini.strftime("%Y-%m-%d")
         d_fim_str = data_fim.strftime("%Y-%m-%d")
         
@@ -314,18 +329,16 @@ if btn_calcular:
         
         for i, (setor, agentes_dict) in enumerate(mapa_setores.items()):
             if not agentes_dict:
-                with abas[i]: st.warning("Setor sem agentes."); continue
+                with abas[i]: st.warning("Setor sem agentes mapeados."); continue
             
-            # Lógica de Contas
             contas_alvo = obter_contas_do_setor(setor)
-            st.toast(f"Setor {setor}: Contas {contas_alvo}")
+            st.toast(f"Analisando {setor} (Contas: {contas_alvo})...")
             
-            # Dados Operacionais
             ids_setor = list(agentes_dict.keys())
             stats_ops = buscar_dados_operacionais_multi(token, contas_alvo, d_ini_str, d_fim_str, ids_canais, ids_setor)
             
             dados_setor = []
-            progress_text = f"Calculando {setor}..."
+            progress_text = f"Processando {setor}..."
             my_bar = st.progress(0, text=progress_text)
             total_ag = len(ids_setor); done = 0
             
@@ -339,7 +352,7 @@ if btn_calcular:
                         pos, tot = future.result()
                         csat = (pos / tot * 100) if tot > 0 else 0.0
                         ops = stats_ops.get(nome, {"Volume": 0, "TMA": "00:00:00", "TMIA": "00:00:00"})
-                        if ops["Volume"] == 0: # Fallback parcial
+                        if ops["Volume"] == 0:
                             for k, v in stats_ops.items():
                                 if k in nome or nome in k: ops = v; break
                         dados_setor.append({
@@ -351,24 +364,25 @@ if btn_calcular:
                     my_bar.progress(int(done/total_ag*100), text=f"{setor}: {done}/{total_ag}")
             my_bar.empty()
             
-            # Resultado
             df_setor = pd.DataFrame(dados_setor)
             vencedor, df_rank = calcular_rankings_setor(df_setor)
             
             with abas[i]:
                 if vencedor:
                     st.success(f"### 👑 Vencedor: {vencedor}")
-                    render_top3_cards(df_rank) # Novos Cards
+                    render_top3_cards(df_rank)
                     
-                    st.markdown("#### 📊 Detalhamento")
+                    st.markdown("#### 📊 Tabela Detalhada")
                     st.dataframe(
                         df_rank[['Agente', 'Score_Final', 'Volume', 'TMA', 'TMIA', 'CSAT_Score', 'CSAT_Qtd', 'Rank_TMA', 'Rank_TMIA', 'Rank_CSAT']],
                         column_config={
-                            "CSAT_Score": st.column_config.NumberColumn("CSAT %", format="%.6f%%"), # 6 Casas Decimais
+                            "CSAT_Score": st.column_config.NumberColumn("CSAT %", format="%.6f%%"),
                             "Score_Final": st.column_config.NumberColumn("Score", help="Menor = Melhor")
                         },
                         use_container_width=True, hide_index=True
                     )
-                else: st.warning("Dados insuficientes.")
-        
-        status.update(label="Concluído!", state="complete", expanded=False)
+                else:
+                    st.warning("Dados insuficientes para cálculo do MVP.")
+                    if not df_setor.empty: st.dataframe(df_setor)
+
+        status.update(label="Processamento Concluído!", state="complete", expanded=False)
